@@ -1,0 +1,27 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    ports:
+      - "3000:3000"
+
+  game-client:
+    build:
+      context: .
+      dockerfile: apps/game-client/Dockerfile
+      args:
+        VITE_SERVER_URL: http://localhost:3000
+    ports:
+      - "5173:80"
+    depends_on:
+      - server
+
+  admin-dashboard:
+    build:
+      context: .
+      dockerfile: apps/admin-dashboard/Dockerfile
+    ports:
+      - "4200:80"
+    depends_on:
+      - server

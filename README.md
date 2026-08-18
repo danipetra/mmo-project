@@ -28,8 +28,19 @@ Starts all three together:
 
 Or individually: `npm run dev:server`, `npm run dev:client`, `npm run dev:dashboard`.
 
+## Run with Docker
+
+No local Node/Angular CLI needed — each app has its own multi-stage `Dockerfile` (server → plain Node runtime; game-client/admin-dashboard → static build served by nginx), orchestrated by the root `docker-compose.yml`.
+
+```
+docker compose up --build
+```
+
+Same ports as local dev: server on 3000, game-client on 5173, admin-dashboard on 4200.
+
+Build contexts are the **repo root** (not each app folder), because the workspaces share `packages/shared`'s types — if you ever build an image manually rather than via compose, pass `-f apps/<app>/Dockerfile .` from the repo root.
+
 ## Next steps (not yet done)
 
 - Persistence (DB) for anything beyond in-memory player state.
-- Dockerfile + docker-compose for one-command run without installing Node/Angular CLI locally.
-- Deploy: server → Render/Fly.io (needs a persistent process for WebSocket); game-client + admin-dashboard → Vercel/Netlify as static builds.
+- Deploy: server → Render/Fly.io (needs a persistent process for WebSocket); game-client + admin-dashboard → Vercel/Netlify as static builds, or reuse the same Docker images.
