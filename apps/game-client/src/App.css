@@ -1,0 +1,16 @@
+.app-shell {
+  width: 100vw;
+  height: 100vh;
+  position: relative;
+}
+
+.status-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  padding: 0.5rem 1rem;
+  font-family: monospace;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+}

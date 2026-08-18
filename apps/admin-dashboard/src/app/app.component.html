@@ -1,0 +1,20 @@
+<main class="dashboard">
+  <h1>MMO Admin Dashboard</h1>
+
+  <div class="status" [class.online]="connected" [class.offline]="!connected">
+    {{ connected ? 'Server online' : 'Server unreachable' }}
+  </div>
+
+  @if (stats) {
+    <div class="stat-grid">
+      <div class="stat-card">
+        <span class="stat-value">{{ stats.playersOnline }}</span>
+        <span class="stat-label">Players online</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value">{{ stats.uptimeSeconds }}s</span>
+        <span class="stat-label">Server uptime</span>
+      </div>
+    </div>
+  }
+</main>
