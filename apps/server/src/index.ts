@@ -1,6 +1,5 @@
 import cors from "@fastify/cors";
 import Fastify from "fastify";
-import { createServer } from "node:http";
 import { Server } from "socket.io";
 import type {
   ClientToServerEvents,
@@ -26,8 +25,7 @@ app.get("/stats", async (): Promise<ServerStats> => ({
 
 await app.ready();
 
-const httpServer = createServer(app.server);
-const io = new Server<ClientToServerEvents, ServerToClientEvents>(httpServer, {
+const io = new Server<ClientToServerEvents, ServerToClientEvents>(app.server, {
   cors: { origin: "*" },
 });
 
@@ -53,6 +51,5 @@ io.on("connection", (socket) => {
   });
 });
 
-httpServer.listen(PORT, () => {
-  app.log.info(`WebSocket server listening on :${PORT}`);
-});
+await app.listen({ port: PORT, host: "0.0.0.0" });
+app.log.info(`WebSocket server listening on :${PORT}`);
