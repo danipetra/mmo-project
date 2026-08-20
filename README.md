@@ -3,7 +3,7 @@
 Monorepo (npm workspaces) with three apps sharing one backend:
 
 - `apps/server` — Node.js, TypeScript, Fastify (REST) + Socket.io (WebSocket) + Postgres. Accounts and characters (up to 3 per account, experience points) are persisted; live player state — position, HP, and later combat — is deliberately in-memory only, reset every connection.
-- `apps/game-client` — React + Vite + react-three-fiber. Login/register → pick or create a character (up to 3) → connects to the server over WebSocket, renders each connected player as a labeled cube, arrow keys move yours.
+- `apps/game-client` — React + Vite + react-three-fiber. Login/register → pick or create a character (up to 3) → connects to the server over WebSocket. Each player is a low-poly rigged character (WASD/arrow keys move yours, with idle/walk animations) — see `public/models/CREDITS.md` for the asset source.
 - `apps/admin-dashboard` — Angular. Polls the server's REST `/stats` endpoint every 2s and shows players online / uptime.
 - `packages/shared` — TypeScript types shared between server and game-client (WebSocket event contracts, `PlayerState`, auth request/response shapes).
 
@@ -46,12 +46,12 @@ itself. `npm run dev` starts all three apps together (uses `concurrently`); the 
 `users` table automatically on first boot.
 
 Then open **http://localhost:5180**, register an account, create a character, and you're in the 3D
-scene — try the "Simulate kill (+10 XP)" and "Take damage (-10 HP)" HUD buttons (placeholders standing
-in for real gameplay), then reload the page and re-select the same character: XP/level survive, HP is
-back to full. Open a second browser tab and either pick a different character on the same account or
-register a second account entirely to see multiplayer — both cubes should move independently and show
-their character names. Check **http://localhost:4200** for the admin dashboard (players online /
-server uptime).
+scene — move with **WASD or arrow keys** (idle/walk animations swap automatically), try the "Simulate
+kill (+10 XP)" and "Take damage (-10 HP)" HUD buttons (placeholders standing in for real gameplay),
+then reload the page and re-select the same character: XP/level survive, HP is back to full. Open a
+second browser tab and either pick a different character on the same account or register a second
+account entirely to see multiplayer — both characters should move independently and show their names.
+Check **http://localhost:4200** for the admin dashboard (players online / server uptime).
 
 Stop with `Ctrl+C`; Postgres keeps running in the background afterwards (`docker compose down` to
 stop it too — your registered accounts persist in the `postgres-data` volume either way, only
@@ -110,6 +110,10 @@ you connect — deliberate, not a gap; see `CLAUDE.md`'s server section for the 
 - Real gameplay (mobs, combat) to replace the "Simulate kill" / "Take damage" HUD placeholders — the
   persistence foundation (durable exp, ephemeral everything else) is meant to be built on top of, not
   reworked, once this exists.
+- Swap the player model's mesh for a properly textured/clothed character sharing the same skeleton —
+  the current one is an untextured placeholder body ("Mannequin"), just recolored; see
+  `apps/game-client/public/models/CREDITS.md`.
+- Environment art (ground, props, lighting) — currently just a flat grid, no scene dressing yet.
 - Deploy: server → Render/Fly.io (needs a persistent process for WebSocket, plus a managed Postgres like Supabase/Neon); game-client + admin-dashboard → Vercel/Netlify as static builds, or reuse the same Docker images.
 
 Known, accepted limitation: deleting a character behind a currently-open game connection doesn't

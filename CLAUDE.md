@@ -165,7 +165,7 @@ Known accepted limitation: deleting the character behind a currently-open socket
 force-disconnect that socket — only the *next* connect attempt re-validates ownership. Not built
 deliberately (real scope beyond what was asked), not an oversight.
 
-### Game client (`apps/game-client/src/App.tsx`, `Login.tsx`, `CharacterSelect.tsx`, `api.ts`)
+### Game client (`apps/game-client/src/App.tsx`, `Login.tsx`, `CharacterSelect.tsx`, `api.ts`, `PlayerModel.tsx`)
 
 `App` is a 3-state machine, each state gated on `localStorage`: no `auth` (`mmo-auth` key,
 `AuthResponse`) → `<Login>`; `auth` but no selected character (`mmo-character` key, `{id, name}`) →
@@ -181,16 +181,42 @@ message: `"unauthorized"` triggers a full sign-out (clears both `localStorage` k
 `<Login>`); anything else (stale/foreign character id, a transient server error) clears only the
 character key and falls back to `<CharacterSelect>` — deliberately *not* a full sign-out, since e.g. a
 character deleted from another tab isn't a login problem. "Change character" does the same
-character-key-only clear. Renders one cube per connected player via react-three-fiber, keyed by socket
-id (still ephemeral — a reconnect gets a new cube identity even for the same character), coloring the
-local player (matched by `selfId === socket.id`) differently, with `characterName` + level as a
-floating `drei` `<Html>` label, plus an HP bar/exp/level readout in the HUD. Movement is arrow-key
-driven, sends absolute position deltas via `player:move` and optimistically updates local state before
-the server's broadcast round-trip confirms it — no such optimistic update exists for
-`player:gainExp`/`player:takeDamage` (the HUD's "Simulate kill" / "Take damage" buttons — placeholders
-for future real mob-kill/combat logic, deliberately server-decided amounts, not client-supplied), so
-those broadcast to every socket including the sender (`io.emit`, not `socket.broadcast.emit`) rather
-than relying on a local prediction.
+character-key-only clear. `player:gainExp`/`player:takeDamage` (the HUD's "Simulate kill" / "Take
+damage" buttons — placeholders for future real mob-kill/combat logic, deliberately server-decided
+amounts, not client-supplied) have no local prediction, so they broadcast to every socket including
+the sender (`io.emit`, not `socket.broadcast.emit`) rather than relying on one.
+
+**Player rendering/movement is split into two different components with two different data-flow
+models** — this is deliberate, not duplication:
+
+- `LocalPlayer` (the character you control): position lives in a plain `useRef`, updated every frame
+  in a `useFrame` callback from currently-held WASD/arrow keys (`keydown`/`keyup` into a `Set`, read
+  each frame — not per-keystroke), and applied directly to the Three.js group's transform. It never
+  goes through React state, which would mean a re-render on every frame for no benefit. `self`
+  (the matching `PlayerState` from the `players` array) supplies the *initial* spawn position, read
+  once via `useRef`'s lazy initializer, plus the live HUD stats (`level`/`exp`/`hp`) — which the
+  server keeps current independently via the `gainExp`/`takeDamage` broadcasts above; the local
+  player's own `x`/`y`/`z` in `players` state goes stale after mount (the server's `player:move`
+  handler broadcasts via `socket.broadcast.emit`, excluding the sender) but that's fine since nothing
+  reads it after the initial spawn. Position updates are throttled to the server (`player:move`,
+  ~every 100ms while moving, not every frame) to avoid flooding the socket.
+- `RemotePlayer` (everyone else): purely state-driven, snapped straight to whatever `x`/`y`/`z` the
+  latest `world:state` broadcast contains — no prediction or interpolation. The server has no concept
+  of "is this player moving," so `RemotePlayer` infers it itself: a `useEffect` on `[player.x,
+  player.z]` flips a local `isMoving` flag on every position change and clears it again after
+  `REMOTE_IDLE_TIMEOUT_MS` (400ms) of no further change, driving the idle/walk animation swap.
+
+Both render `<PlayerModel isMoving={...} />` (`PlayerModel.tsx`) — a low-poly rigged humanoid loaded
+via `useGLTF`/`useAnimations` from `public/models/player.gltf` (see `public/models/CREDITS.md`: CC0
+Quaternius Universal Animation Library, mesh recolored from its original bright orange/purple
+placeholder look), cross-fading between the model's `Idle_Loop`/`Walk_Loop` clips based on `isMoving`.
+**Every `PlayerModel` instance must clone the loaded scene with `SkeletonUtils.clone`
+(`three/addons/utils/SkeletonUtils.js`), not a plain `Object3D.clone()`** — the model is skinned
+(rigged), and a plain clone doesn't duplicate skeleton/bone bindings, so multiple on-screen players
+would end up sharing and fighting over one skeleton. Both `LocalPlayer` and `RemotePlayer` render
+under a single `<Suspense fallback={null}>` inside `<Canvas>` — `useGLTF` suspends while the model
+loads (mitigated but not eliminated by `useGLTF.preload` at module load time in `PlayerModel.tsx`);
+forgetting the boundary crashes the scene on first mount.
 
 `VITE_SERVER_URL` (typed in `src/vite-env.d.ts`) overrides the server URL; defaults to
 `http://localhost:3000`. Set at build time (Vite env var), not runtime — the Docker build passes it as
