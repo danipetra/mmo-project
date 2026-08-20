@@ -20,7 +20,7 @@ the repo root unless noted.
 npm install              # installs all three apps + shared package in one pass
 npm run dev               # runs server + game-client + admin-dashboard concurrently (concurrently)
 npm run dev:server         # server only  -> http://localhost:3000
-npm run dev:client         # game-client only -> http://localhost:5173
+npm run dev:client         # game-client only -> http://localhost:5180
 npm run dev:dashboard       # admin-dashboard only -> http://localhost:4200
 ```
 
@@ -37,6 +37,11 @@ Native dev (`npm run dev`) still needs Postgres reachable — start just that pi
 `docker compose up -d postgres` first, and copy `apps/server/.env.example` to `apps/server/.env`
 (gitignored) if it doesn't already exist. The server won't boot without a working `DATABASE_URL`:
 `initDb()` runs (and can throw) before Fastify starts listening.
+
+`game-client`'s dev port is pinned to `5180` with `strictPort: true` in `vite.config.ts` — Vite's
+default 5173 (and its auto-picked fallbacks like 5174) kept colliding with stray processes left
+running from earlier sessions on this machine. `strictPort` makes a real conflict fail loudly instead
+of silently renumbering, which is easier to debug than chasing "which port did it land on this time."
 
 ### Docker
 
