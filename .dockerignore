@@ -3,3 +3,5 @@
 **/.angular
 .git
 *.tsbuildinfo
+**/.env
+**/.env.local
