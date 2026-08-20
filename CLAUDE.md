@@ -7,9 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A learning/portfolio project: a lightweight multiplayer game world. It intentionally combines three
 stacks the author is building interview-relevant skills in within one codebase — React (game client,
 via react-three-fiber), Angular (admin dashboard), and a Node.js backend exposing both REST and
-WebSocket APIs. Accounts (Postgres + JWT) now persist; live player state (position) and real gameplay
-are still not built — the "MMO" ambition is deliberately being built up incrementally from this
-minimal slice rather than attempted all at once.
+WebSocket APIs. Accounts and characters (Postgres + JWT) persist; live player state (position, HP)
+and real gameplay/combat are still not built — the "MMO" ambition is deliberately being built up
+incrementally from this minimal slice rather than attempted all at once. The current foundation is
+the **durable/ephemeral persistence split** (see the Server section below): experience points and
+character identity are the only things written to Postgres, everything else about a live player is
+recomputed fresh every connection.
 
 ## Commands
 
@@ -81,12 +84,18 @@ symlink to exist during the build stage where `tsc` type-checks against it) — 
 dependency is ever added to `shared` (e.g. a shared validation function, not just types), this
 assumption breaks and the runtime stage will need `packages/shared` copied in too.
 
+Character leveling (`levelForExp`/`maxHpForLevel` in `apps/server/src/leveling.ts`) is server-only for
+the same reason: `PlayerState` carries a server-computed `level` field over the wire, so the client
+only ever displays `player.level` — it never needs to compute it itself, so there's nothing to share
+and nothing to duplicate. If the client ever needs to predict a level client-side (e.g. an XP bar that
+animates before the server confirms), *that's* the point where this trade-off should be revisited.
+
 `admin-dashboard` does **not** depend on `shared` — it talks to the server over plain REST
 (`HttpClient`) with its own local `ServerStats` interface duplicating the shape, since Angular
 consuming a TS-source-only workspace package adds friction that wasn't worth it for one interface.
 If the dashboard starts consuming WebSocket events too, revisit pulling in `shared` there.
 
-### Server (`apps/server/src/index.ts`, `auth.ts`, `db.ts`)
+### Server (`apps/server/src/index.ts`, `auth.ts`, `db.ts`, `characters.ts`, `leveling.ts`, `httpAuth.ts`)
 
 Fastify + Socket.io, both attached to **the same underlying `http.Server`** (`app.server`) via
 `new Server(app.server, {...})`, started with `app.listen(...)`. This matters: an earlier version
@@ -97,42 +106,91 @@ server). Socket.io attaches its own request/upgrade handlers to whatever server 
 looked fine while every REST route hung forever. If REST requests ever start hanging again with WS
 still working, this is the first thing to check.
 
-Live player state (position) is still a plain in-memory `Map<socketId, PlayerState>` — resets on every
-reconnect/restart, nothing persisted. REST (`/health`, `/stats`) and WebSocket
-(`world:state`, `player:joined`, `player:left`, `player:move`) share this same map, so `/stats`'s
-`playersOnline` is always in sync with connected sockets by construction. `player:move` mutates the
-map in place and re-broadcasts the full player list rather than diffing — fine at prototype scale,
-will need to become delta-based before this could support many concurrent players.
+**The durable/ephemeral split, as a rule**: `characters.exp` (and the character's identity — name)
+are the *only* live-player data that ever touches Postgres. Position, HP, and (later) all
+combat/mob-calculation results live only in the in-memory `Map<socketId, PlayerState>` for the
+duration of a connection and are recomputed fresh every time (`level`/`maxHp` derived from `exp`,
+`hp` starts full) — never loaded from or written to the DB. This is deliberate, not an omission: it
+keeps the hot, high-frequency stuff (position changes constantly; HP will once combat exists) off the
+database entirely, while the durable stuff (`exp`) changes rarely enough (discrete events, not a
+per-frame stream) that a direct write-through `UPDATE` per change is fine — no batching/snapshot
+machinery needed. Any future gameplay system should keep asking "does this need to survive a
+reconnect?" before adding a new DB column; if not, it belongs only on the in-memory `PlayerState`.
 
-Accounts, unlike player state, **are** persisted: `db.ts` opens a `pg` `Pool` from `DATABASE_URL` and
-creates a `users` table (id, username, bcrypt `password_hash`) on boot if missing — there's no
-migration framework, just an idempotent `CREATE TABLE IF NOT EXISTS`. `auth.ts` hashes/verifies
-passwords with `bcryptjs` and signs/verifies JWTs (`jsonwebtoken`, `JWT_SECRET` env var, 7-day expiry)
-carrying `{ sub: userId, username }`. `POST /auth/register` and `POST /auth/login` (Fastify JSON-schema
-validated: username 3-32 chars, password ≥8) both return `{ token, username }`. A Socket.io `io.use`
-middleware requires a valid JWT in the connection handshake (`socket.handshake.auth.token`) — no token,
-expired token, or bad signature all get the connection rejected with `next(new Error("unauthorized"))`
-before any player-state code runs. The authenticated `username` is copied onto `socket.data` and into
-each connection's `PlayerState`, so `id` (socket id, ephemeral) and `username` (account identity,
-persisted) are deliberately different fields.
+Accounts and characters are persisted: `db.ts` opens a `pg` `Pool` from `DATABASE_URL` and creates
+`users` and `characters` tables on boot if missing — there's no migration framework, just idempotent
+`CREATE TABLE IF NOT EXISTS` statements. `auth.ts` hashes/verifies passwords with `bcryptjs` and
+signs/verifies JWTs (`jsonwebtoken`, `JWT_SECRET` env var, 7-day expiry) carrying `{ sub: userId,
+username }` — **this shape never changed** when characters were added (see below, that was a
+deliberate rejection of an alternative design). `POST /auth/register` and `POST /auth/login` (Fastify
+JSON-schema validated: username 3-32 chars, password ≥8) both return `{ token, username }`.
 
-### Game client (`apps/game-client/src/App.tsx`, `Login.tsx`)
+**Characters** (`characters.ts`): up to 3 per user, global case-insensitive unique names (`UNIQUE
+INDEX ON characters (lower(name))` — MMO-style, server-wide, not per-account). The "max 3" limit
+can't be expressed as a simple unique constraint (that only expresses "at most 1"), and a plain
+`INSERT ... WHERE (SELECT COUNT(*) ...) < 3` guard is *not* race-free under Postgres's default `READ
+COMMITTED` isolation — two concurrent inserts can both read `COUNT = 2` from their own snapshot and
+both succeed. `createCharacter` fixes this with `pg_advisory_xact_lock($user_id)` inside a
+transaction, serializing concurrent attempts for the same user without needing a row to lock (a
+user's first character has none) — verified against a real concurrency race in a throwaway smoke
+test (two `Promise.all`'d concurrent creates, exactly one succeeded). Every ownership check in this
+feature (delete, socket connect) is a single `WHERE id = $1 AND user_id = $2` query — never "fetch by
+id, then compare `user_id` in application code," which is a TOCTOU/copy-paste trap once there are
+multiple call sites doing ownership checks. `level` is derived from `exp` on every read
+(`leveling.ts`'s `levelForExp`) rather than stored, so there's no denormalized column to drift and a
+future rebalance of the curve updates every character for free.
 
-`App` holds auth state only (`AuthResponse | undefined`, persisted to `localStorage` under
-`mmo-auth`): no token renders `<Login>` (register/login form, posts to `/auth/register` or
-`/auth/login`), a token renders `<Game>`. No router — it's a plain conditional, not routes.
+**REST auth** (`httpAuth.ts`): the `requireAuth` Fastify `preHandler` is the *first* JWT-protected
+REST route pattern in this codebase — until characters, only the Socket.io `io.use` middleware ever
+checked a token. It reads `Authorization: Bearer <token>`, verifies it with the same `verifyToken` the
+socket middleware uses, and attaches `request.userId` (typed via a `declare module "fastify"`
+augmentation) or replies 401. Fastify preHandlers stop the chain by sending a reply, not by an
+Express-style `next()` — don't copy the socket middleware's control-flow shape here.
+
+**Character selection is *not* a new token.** The obvious-looking design — re-sign a new JWT with
+`characterId` baked in after `POST /characters/:id/select` — was considered and rejected: the socket
+connect handler already has to reload the character fresh from Postgres by id (needed anyway to seed
+authoritative `exp` into the in-memory state), and that DB read **is** the ownership check. A second
+token shape would add a real footgun (two independent expiry/shape stories to reason about) for zero
+benefit. Instead `characterId` travels **unsigned** in the Socket.io handshake
+(`socket.handshake.auth = { token, characterId }`); `io.use` verifies the account JWT exactly as
+before (`AuthTokenPayload` is unchanged), then authorizes with `getOwnedCharacter(payload.sub,
+characterId)`. This also means there's no `POST /characters/:id/select` REST endpoint at all —
+`GET /characters` already only returns characters the caller owns, so "selecting" one is purely local
+client state. The middleware rejects with a **distinguishable** error message — `"unauthorized"`
+(bad/expired account token) vs `"character not found"` (missing/foreign/stale id, or any other
+server-side failure) — so the client can tell "log in again" apart from "pick a character again."
+
+Known accepted limitation: deleting the character behind a currently-open socket connection doesn't
+force-disconnect that socket — only the *next* connect attempt re-validates ownership. Not built
+deliberately (real scope beyond what was asked), not an oversight.
+
+### Game client (`apps/game-client/src/App.tsx`, `Login.tsx`, `CharacterSelect.tsx`, `api.ts`)
+
+`App` is a 3-state machine, each state gated on `localStorage`: no `auth` (`mmo-auth` key,
+`AuthResponse`) → `<Login>`; `auth` but no selected character (`mmo-character` key, `{id, name}`) →
+`<CharacterSelect>`; both → `<Game>`. No router — it's a plain conditional, not routes. Selecting a
+character is purely a local state write (see the server-side note on why there's no
+select-endpoint/second-token); `api.ts` is a small `Authorization: Bearer` fetch wrapper used by
+`<CharacterSelect>` for `GET/POST/DELETE /characters` — the client's only authenticated REST usage
+(the account token otherwise only ever goes into the socket handshake).
 
 `<Game>` holds the Socket.io connection in a `useRef` and player list in state; connects with
-`auth: { token }` in the handshake so the server's `io.use` middleware can authenticate it. On
-`connect_error` (e.g. expired/invalid token) it calls `onSignOut`, which clears `localStorage` and
-bounces back to `<Login>` — this is the only place token expiry is handled, there's no proactive
-refresh. Renders one cube per connected player via react-three-fiber, keyed by socket id (still
-ephemeral — a reconnect gets a new cube identity even for the same account), coloring the local player
-(matched by `selfId === socket.id`) differently, with the player's `username` as a floating
-`drei` `<Html>` label. Movement is arrow-key driven, sends absolute position deltas via `player:move`
-and optimistically updates local state before the server's broadcast round-trip confirms it — there is
-no reconciliation/interpolation between the optimistic update and the server's next `world:state`
-broadcast.
+`auth: { token, characterId }` in the handshake. On `connect_error` it branches on the server's
+message: `"unauthorized"` triggers a full sign-out (clears both `localStorage` keys, back to
+`<Login>`); anything else (stale/foreign character id, a transient server error) clears only the
+character key and falls back to `<CharacterSelect>` — deliberately *not* a full sign-out, since e.g. a
+character deleted from another tab isn't a login problem. "Change character" does the same
+character-key-only clear. Renders one cube per connected player via react-three-fiber, keyed by socket
+id (still ephemeral — a reconnect gets a new cube identity even for the same character), coloring the
+local player (matched by `selfId === socket.id`) differently, with `characterName` + level as a
+floating `drei` `<Html>` label, plus an HP bar/exp/level readout in the HUD. Movement is arrow-key
+driven, sends absolute position deltas via `player:move` and optimistically updates local state before
+the server's broadcast round-trip confirms it — no such optimistic update exists for
+`player:gainExp`/`player:takeDamage` (the HUD's "Simulate kill" / "Take damage" buttons — placeholders
+for future real mob-kill/combat logic, deliberately server-decided amounts, not client-supplied), so
+those broadcast to every socket including the sender (`io.emit`, not `socket.broadcast.emit`) rather
+than relying on a local prediction.
 
 `VITE_SERVER_URL` (typed in `src/vite-env.d.ts`) overrides the server URL; defaults to
 `http://localhost:3000`. Set at build time (Vite env var), not runtime — the Docker build passes it as

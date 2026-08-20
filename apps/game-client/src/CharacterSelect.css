@@ -1,0 +1,124 @@
+.charselect-shell {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: system-ui, sans-serif;
+  background: #111;
+  color: #fff;
+}
+
+.charselect-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 340px;
+  padding: 1.5rem;
+  border-radius: 0.5rem;
+  background: #1c1c1c;
+}
+
+.charselect-card h1 {
+  font-size: 1.1rem;
+  margin: 0 0 0.5rem;
+}
+
+.charselect-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.charselect-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0.75rem;
+  background: #2a2a2a;
+  border-radius: 0.25rem;
+}
+
+.charselect-name {
+  font-weight: 600;
+}
+
+.charselect-meta {
+  font-size: 0.75rem;
+  color: #999;
+}
+
+.charselect-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.charselect-actions button {
+  padding: 0.3rem 0.6rem;
+  border: none;
+  border-radius: 0.25rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.charselect-actions button:first-child {
+  background: #ff8c00;
+  color: #111;
+  font-weight: 600;
+}
+
+.charselect-delete {
+  background: transparent;
+  color: #ff6b6b;
+  border: 1px solid #555 !important;
+}
+
+.charselect-create {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.charselect-create input {
+  flex: 1;
+  padding: 0.4rem;
+  border-radius: 0.25rem;
+  border: 1px solid #444;
+  background: #0d0d0d;
+  color: #fff;
+}
+
+.charselect-create button {
+  padding: 0.4rem 0.8rem;
+  border: none;
+  border-radius: 0.25rem;
+  background: #ff8c00;
+  color: #111;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.charselect-limit {
+  font-size: 0.8rem;
+  color: #999;
+  margin: 0.5rem 0 0;
+}
+
+.charselect-signout {
+  margin-top: 0.75rem;
+  padding: 0.4rem;
+  border: 1px solid #444;
+  border-radius: 0.25rem;
+  background: transparent;
+  color: #999;
+  cursor: pointer;
+}
+
+.charselect-error {
+  color: #ff6b6b;
+  font-size: 0.85rem;
+  margin: 0;
+}

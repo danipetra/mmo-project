@@ -1,6 +1,10 @@
 export interface PlayerState {
   id: string;
-  username: string;
+  characterName: string;
+  exp: number;
+  level: number;
+  hp: number;
+  maxHp: number;
   x: number;
   y: number;
   z: number;
@@ -13,6 +17,8 @@ export interface ServerStats {
 
 export interface ClientToServerEvents {
   "player:move": (state: Pick<PlayerState, "x" | "y" | "z">) => void;
+  "player:gainExp": () => void;
+  "player:takeDamage": () => void;
 }
 
 export interface ServerToClientEvents {
@@ -29,4 +35,15 @@ export interface AuthCredentials {
 export interface AuthResponse {
   token: string;
   username: string;
+}
+
+export interface CharacterSummary {
+  id: number;
+  name: string;
+  exp: number;
+  level: number;
+}
+
+export interface CreateCharacterRequest {
+  name: string;
 }

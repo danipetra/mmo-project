@@ -15,9 +15,15 @@
   color: #fff;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 1rem;
 }
 
+.hud-stats {
+  color: #ff8c00;
+}
+
+.hud-button,
 .signout-button {
   padding: 0.2rem 0.6rem;
   border: 1px solid #666;

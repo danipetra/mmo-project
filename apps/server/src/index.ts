@@ -5,7 +5,9 @@ import { DefaultEventsMap, Server } from "socket.io";
 import type {
   AuthCredentials,
   AuthResponse,
+  CharacterSummary,
   ClientToServerEvents,
+  CreateCharacterRequest,
   PlayerState,
   ServerStats,
   ServerToClientEvents,
@@ -17,10 +19,25 @@ import {
   verifyCredentials,
   verifyToken,
 } from "./auth.js";
+import {
+  addExp,
+  CharacterNotFoundError,
+  CharacterSlotLimitError,
+  createCharacter,
+  deleteCharacter,
+  DuplicateCharacterNameError,
+  getOwnedCharacter,
+  listCharacters,
+} from "./characters.js";
 import { initDb } from "./db.js";
+import { requireAuth } from "./httpAuth.js";
+import { hpAfterLevelUp, levelForExp, maxHpForLevel } from "./leveling.js";
 
 interface SocketData {
-  username: string;
+  userId: number;
+  characterId: number;
+  characterName: string;
+  exp: number;
 }
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -83,6 +100,58 @@ app.post<{ Body: AuthCredentials }>(
   },
 );
 
+const characterNameSchema = {
+  body: {
+    type: "object",
+    required: ["name"],
+    properties: {
+      name: { type: "string", minLength: 3, maxLength: 20, pattern: "^[A-Za-z0-9 _-]+$" },
+    },
+  },
+};
+
+app.get("/characters", { preHandler: requireAuth }, async (request): Promise<CharacterSummary[]> => {
+  return listCharacters(request.userId!);
+});
+
+app.post<{ Body: CreateCharacterRequest }>(
+  "/characters",
+  { schema: characterNameSchema, preHandler: requireAuth },
+  async (request, reply) => {
+    try {
+      return await createCharacter(request.userId!, request.body.name);
+    } catch (err) {
+      if (err instanceof CharacterSlotLimitError) {
+        return reply.code(409).send({ error: "you already have the maximum of 3 characters" });
+      }
+      if (err instanceof DuplicateCharacterNameError) {
+        return reply.code(409).send({ error: err.message });
+      }
+      throw err;
+    }
+  },
+);
+
+app.delete<{ Params: { id: string } }>(
+  "/characters/:id",
+  { preHandler: requireAuth },
+  async (request, reply) => {
+    const characterId = Number(request.params.id);
+    if (!Number.isInteger(characterId)) {
+      return reply.code(400).send({ error: "invalid character id" });
+    }
+    try {
+      await deleteCharacter(request.userId!, characterId);
+      return reply.code(204).send();
+    } catch (err) {
+      if (err instanceof CharacterNotFoundError) {
+        return reply.code(404).send({ error: err.message });
+      }
+      throw err;
+    }
+  },
+);
+
 await app.ready();
 
 const io = new Server<ClientToServerEvents, ServerToClientEvents, DefaultEventsMap, SocketData>(
@@ -90,21 +159,46 @@ const io = new Server<ClientToServerEvents, ServerToClientEvents, DefaultEventsM
   { cors: { origin: "*" } },
 );
 
-io.use((socket, next) => {
-  const token = socket.handshake.auth?.token;
+io.use(async (socket, next) => {
+  const { token, characterId } = socket.handshake.auth ?? {};
   const payload = typeof token === "string" ? verifyToken(token) : null;
   if (!payload) {
     next(new Error("unauthorized"));
     return;
   }
-  socket.data.username = payload.username;
-  next();
+
+  const numericCharacterId = Number(characterId);
+  if (!Number.isInteger(numericCharacterId)) {
+    next(new Error("character not found"));
+    return;
+  }
+
+  try {
+    const character = await getOwnedCharacter(payload.sub, numericCharacterId);
+    if (!character) {
+      next(new Error("character not found"));
+      return;
+    }
+    socket.data.userId = payload.sub;
+    socket.data.characterId = character.id;
+    socket.data.characterName = character.name;
+    socket.data.exp = character.exp;
+    next();
+  } catch {
+    next(new Error("server error"));
+  }
 });
 
 io.on("connection", (socket) => {
+  const level = levelForExp(socket.data.exp);
+  const maxHp = maxHpForLevel(level);
   const player: PlayerState = {
     id: socket.id,
-    username: socket.data.username,
+    characterName: socket.data.characterName,
+    exp: socket.data.exp,
+    level,
+    hp: maxHp,
+    maxHp,
     x: 0,
     y: 0,
     z: 0,
@@ -121,6 +215,37 @@ io.on("connection", (socket) => {
     current.y = y;
     current.z = z;
     socket.broadcast.emit("world:state", Array.from(players.values()));
+  });
+
+  // Placeholder for a future real mob-kill calculation. Deliberately a
+  // fixed, server-decided amount rather than client-supplied -- exp must
+  // always be server-authoritative or it's trivially cheatable once real
+  // gameplay exists. Persists via an atomic UPDATE (the durable half of the
+  // durable/ephemeral split).
+  socket.on("player:gainExp", async () => {
+    const current = players.get(socket.id);
+    if (!current) return;
+    const GAIN_AMOUNT = 10;
+    const newExp = await addExp(socket.data.characterId, GAIN_AMOUNT);
+    const newLevel = levelForExp(newExp);
+    current.exp = newExp;
+    if (newLevel > current.level) {
+      current.maxHp = maxHpForLevel(newLevel);
+      current.hp = hpAfterLevelUp(newLevel);
+    }
+    current.level = newLevel;
+    io.emit("world:state", Array.from(players.values()));
+  });
+
+  // Placeholder for future real combat. In-memory only, never written to
+  // the DB -- the ephemeral half of the durable/ephemeral split: exp
+  // survives a reconnect/restart, HP does not.
+  socket.on("player:takeDamage", () => {
+    const current = players.get(socket.id);
+    if (!current) return;
+    const DAMAGE_AMOUNT = 10;
+    current.hp = Math.max(0, current.hp - DAMAGE_AMOUNT);
+    io.emit("world:state", Array.from(players.values()));
   });
 
   socket.on("disconnect", () => {

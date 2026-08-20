@@ -2,8 +2,8 @@
 
 Monorepo (npm workspaces) with three apps sharing one backend:
 
-- `apps/server` — Node.js, TypeScript, Fastify (REST) + Socket.io (WebSocket) + Postgres. Accounts (register/login, JWT) are persisted; live player positions are still in-memory only.
-- `apps/game-client` — React + Vite + react-three-fiber. Login/register screen, then connects to the server over WebSocket (JWT required), renders each connected player as a labeled cube, arrow keys move yours.
+- `apps/server` — Node.js, TypeScript, Fastify (REST) + Socket.io (WebSocket) + Postgres. Accounts and characters (up to 3 per account, experience points) are persisted; live player state — position, HP, and later combat — is deliberately in-memory only, reset every connection.
+- `apps/game-client` — React + Vite + react-three-fiber. Login/register → pick or create a character (up to 3) → connects to the server over WebSocket, renders each connected player as a labeled cube, arrow keys move yours.
 - `apps/admin-dashboard` — Angular. Polls the server's REST `/stats` endpoint every 2s and shows players online / uptime.
 - `packages/shared` — TypeScript types shared between server and game-client (WebSocket event contracts, `PlayerState`, auth request/response shapes).
 
@@ -45,10 +45,13 @@ npm run dev
 itself. `npm run dev` starts all three apps together (uses `concurrently`); the server creates its
 `users` table automatically on first boot.
 
-Then open **http://localhost:5180**, register an account, and you're in the 3D scene. Open it again
-in a second tab (or incognito window) and register a different account to see multiplayer — both
-cubes should move independently and show their usernames. Check **http://localhost:4200** for the
-admin dashboard (players online / server uptime).
+Then open **http://localhost:5180**, register an account, create a character, and you're in the 3D
+scene — try the "Simulate kill (+10 XP)" and "Take damage (-10 HP)" HUD buttons (placeholders standing
+in for real gameplay), then reload the page and re-select the same character: XP/level survive, HP is
+back to full. Open a second browser tab and either pick a different character on the same account or
+register a second account entirely to see multiplayer — both cubes should move independently and show
+their character names. Check **http://localhost:4200** for the admin dashboard (players online /
+server uptime).
 
 Stop with `Ctrl+C`; Postgres keeps running in the background afterwards (`docker compose down` to
 stop it too — your registered accounts persist in the `postgres-data` volume either way, only
@@ -73,13 +76,18 @@ four images); after that Docker caches layers and it's much faster. Same URLs as
 `server` won't start until Postgres's healthcheck passes, so don't worry if its logs are quiet for a
 few seconds after `postgres` starts.
 
-## Auth
+## Auth and characters
 
 `POST /auth/register` and `POST /auth/login` (`{ username, password }`, password min 8 chars) return
-`{ token, username }`. The game-client stores this in `localStorage` and sends `token` in the
-Socket.io handshake (`auth: { token }`); the server's `io.use` middleware rejects any WebSocket
-connection without a valid, unexpired JWT. The admin-dashboard doesn't need auth yet — it only reads
-the public `/stats` endpoint.
+`{ token, username }`. The game-client stores this in `localStorage` and uses it as a `Bearer` token
+for `GET/POST/DELETE /characters` (list/create/delete, up to 3 per account, globally unique names) and
+in the Socket.io handshake alongside the chosen character (`auth: { token, characterId }`). The
+server's `io.use` middleware rejects any WebSocket connection without a valid JWT *and* a character id
+that account actually owns. The admin-dashboard doesn't need auth yet — it only reads the public
+`/stats` endpoint.
+
+Only experience points (and the character's name) are ever persisted. Position and HP reset every time
+you connect — deliberate, not a gap; see `CLAUDE.md`'s server section for the reasoning.
 
 ## Troubleshooting
 
@@ -99,5 +107,10 @@ the public `/stats` endpoint.
 
 ## Next steps (not yet done)
 
-- Persist player state itself (not just accounts) — currently positions reset to the in-memory map on every reconnect/restart.
+- Real gameplay (mobs, combat) to replace the "Simulate kill" / "Take damage" HUD placeholders — the
+  persistence foundation (durable exp, ephemeral everything else) is meant to be built on top of, not
+  reworked, once this exists.
 - Deploy: server → Render/Fly.io (needs a persistent process for WebSocket, plus a managed Postgres like Supabase/Neon); game-client + admin-dashboard → Vercel/Netlify as static builds, or reuse the same Docker images.
+
+Known, accepted limitation: deleting a character behind a currently-open game connection doesn't
+force-disconnect that socket — only the next connect attempt re-validates ownership.

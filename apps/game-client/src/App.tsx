@@ -8,11 +8,18 @@ import type {
   PlayerState,
   ServerToClientEvents,
 } from "shared";
+import CharacterSelect from "./CharacterSelect";
 import Login from "./Login";
 import "./App.css";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? "http://localhost:3000";
-const STORAGE_KEY = "mmo-auth";
+const AUTH_STORAGE_KEY = "mmo-auth";
+const CHARACTER_STORAGE_KEY = "mmo-character";
+
+interface SelectedCharacter {
+  id: number;
+  name: string;
+}
 
 function Player({ player, isSelf }: { player: PlayerState; isSelf: boolean }) {
   return (
@@ -20,13 +27,27 @@ function Player({ player, isSelf }: { player: PlayerState; isSelf: boolean }) {
       <boxGeometry args={[1, 1, 1]} />
       <meshStandardMaterial color={isSelf ? "orange" : "royalblue"} />
       <Html position={[0, 1, 0]} center distanceFactor={10}>
-        <span className="player-label">{player.username}</span>
+        <span className="player-label">
+          {player.characterName} · Lv{player.level}
+        </span>
       </Html>
     </mesh>
   );
 }
 
-function Game({ auth, onSignOut }: { auth: AuthResponse; onSignOut: () => void }) {
+function Game({
+  auth,
+  character,
+  onCharacterInvalid,
+  onSignOut,
+  onChangeCharacter,
+}: {
+  auth: AuthResponse;
+  character: SelectedCharacter;
+  onCharacterInvalid: () => void;
+  onSignOut: () => void;
+  onChangeCharacter: () => void;
+}) {
   const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents>>(undefined);
   const [connected, setConnected] = useState(false);
   const [selfId, setSelfId] = useState<string>();
@@ -34,7 +55,7 @@ function Game({ auth, onSignOut }: { auth: AuthResponse; onSignOut: () => void }
 
   useEffect(() => {
     const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io(SERVER_URL, {
-      auth: { token: auth.token },
+      auth: { token: auth.token, characterId: character.id },
     });
     socketRef.current = socket;
 
@@ -43,7 +64,17 @@ function Game({ auth, onSignOut }: { auth: AuthResponse; onSignOut: () => void }
       setSelfId(socket.id);
     });
     socket.on("disconnect", () => setConnected(false));
-    socket.on("connect_error", () => onSignOut());
+    socket.on("connect_error", (err) => {
+      // Only a bad/expired account token forces a full sign-out. Anything
+      // else (stale/foreign character id, a transient server error) falls
+      // back to character selection instead, since it's not a login
+      // problem -- don't discard a perfectly good session over it.
+      if (err.message === "unauthorized") {
+        onSignOut();
+      } else {
+        onCharacterInvalid();
+      }
+    });
     socket.on("world:state", (state) => setPlayers(state));
     socket.on("player:joined", (player) =>
       setPlayers((prev) => [...prev.filter((p) => p.id !== player.id), player]),
@@ -55,7 +86,7 @@ function Game({ auth, onSignOut }: { auth: AuthResponse; onSignOut: () => void }
     return () => {
       socket.disconnect();
     };
-  }, [auth.token, onSignOut]);
+  }, [auth.token, character.id, onSignOut, onCharacterInvalid]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -76,11 +107,32 @@ function Game({ auth, onSignOut }: { auth: AuthResponse; onSignOut: () => void }
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [players, selfId]);
 
+  const self = players.find((p) => p.id === selfId);
+
   return (
     <div className="app-shell">
       <div className="status-bar">
-        {connected ? `${auth.username} connected` : "Connecting..."} — players
-        online: {players.length}
+        {connected ? `${character.name} connected` : "Connecting..."} — players online:{" "}
+        {players.length}
+        {self && (
+          <span className="hud-stats">
+            Lv{self.level} · {self.exp} XP · HP {self.hp}/{self.maxHp}
+          </span>
+        )}
+        {/* Placeholder buttons standing in for real gameplay (mob kills,
+            combat) until that system exists -- see CLAUDE.md. */}
+        <button className="hud-button" onClick={() => socketRef.current?.emit("player:gainExp")}>
+          Simulate kill (+10 XP)
+        </button>
+        <button
+          className="hud-button"
+          onClick={() => socketRef.current?.emit("player:takeDamage")}
+        >
+          Take damage (-10 HP)
+        </button>
+        <button className="signout-button" onClick={onChangeCharacter}>
+          Change character
+        </button>
         <button className="signout-button" onClick={onSignOut}>
           Sign out
         </button>
@@ -100,25 +152,59 @@ function Game({ auth, onSignOut }: { auth: AuthResponse; onSignOut: () => void }
 
 function App() {
   const [auth, setAuth] = useState<AuthResponse | undefined>(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(AUTH_STORAGE_KEY);
     return stored ? (JSON.parse(stored) as AuthResponse) : undefined;
+  });
+  const [character, setCharacter] = useState<SelectedCharacter | undefined>(() => {
+    const stored = localStorage.getItem(CHARACTER_STORAGE_KEY);
+    return stored ? (JSON.parse(stored) as SelectedCharacter) : undefined;
   });
 
   const handleAuthenticated = (next: AuthResponse) => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(next));
     setAuth(next);
   };
 
+  const handleSelectCharacter = (next: SelectedCharacter) => {
+    localStorage.setItem(CHARACTER_STORAGE_KEY, JSON.stringify(next));
+    setCharacter(next);
+  };
+
+  const handleChangeCharacter = () => {
+    localStorage.removeItem(CHARACTER_STORAGE_KEY);
+    setCharacter(undefined);
+  };
+
   const handleSignOut = () => {
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+    localStorage.removeItem(CHARACTER_STORAGE_KEY);
     setAuth(undefined);
+    setCharacter(undefined);
   };
 
   if (!auth) {
     return <Login onAuthenticated={handleAuthenticated} />;
   }
 
-  return <Game auth={auth} onSignOut={handleSignOut} />;
+  if (!character) {
+    return (
+      <CharacterSelect
+        token={auth.token}
+        onSelect={handleSelectCharacter}
+        onSignOut={handleSignOut}
+      />
+    );
+  }
+
+  return (
+    <Game
+      auth={auth}
+      character={character}
+      onCharacterInvalid={handleChangeCharacter}
+      onSignOut={handleSignOut}
+      onChangeCharacter={handleChangeCharacter}
+    />
+  );
 }
 
 export default App;
